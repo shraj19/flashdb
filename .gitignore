@@ -1,0 +1,6 @@
+# FlashDB
+server
+flashdb
+*.exe
+*.out
+.DS_Store
