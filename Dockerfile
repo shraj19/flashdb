@@ -13,7 +13,7 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN go build -o flashdb cmd/server/main.go
+RUN go build -o flashdb ./main.go
 
 # Runtime stage
 FROM alpine:latest
