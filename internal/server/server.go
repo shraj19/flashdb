@@ -106,12 +106,12 @@ func StartServer() {
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		fmt.Println("Failed to bind to port %d:", port, err)
+		fmt.Printf("Failed to bind to port %s: %v\n", port, err)
 		return
 	}
 	defer listener.Close()
 
-	fmt.Println("Server listening on %v", addr)
+	fmt.Printf("Server listening on %s\n", addr)
 
 	for {
 		conn, err := listener.Accept()
