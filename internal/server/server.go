@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"os"
+	"strings"
+
 	"github.com/shraj19/flashdb/internal/commands"
+	"github.com/shraj19/flashdb/internal/replication"
 	"github.com/shraj19/flashdb/internal/resp"
 	"github.com/shraj19/flashdb/internal/storage"
 )
@@ -73,33 +75,58 @@ func HandleConnection(conn net.Conn) {
 func StartServer() {
 	// Start any background tasks like key expiry
 	storage.InitCommands(map[string]storage.CommandHandler{
-		"PING":   commands.PING,
-		"ECHO":   commands.ECHO,
-		"INFO":   commands.INFO,
-		"SET":    commands.SETvalue,
-		"GET":    commands.GETvalue,
-		"TYPE":   commands.TYPE,
-		"INCR":   commands.INCR,
-		"MULTI":  commands.MULTI,
-		"DISCARD": commands.DISCARD,
-		"EXEC":   commands.EXEC,
-		"LPUSH":  commands.LPUSH,
-		"RPUSH":  commands.RPUSH,
-		"LPOP":   commands.LPOP,
-		"BLPOP":  commands.BLPOP,
-		"LRANGE": commands.LRANGE,
-		"LLEN":   commands.LLEN,
-		"XADD":   commands.XADD,
-		"XREAD":  commands.XREAD,
-		"XRANGE": commands.XRANGE,
+		"PING":     commands.PING,
+		"ECHO":     commands.ECHO,
+		"INFO":     commands.INFO,
+		"SET":      commands.SETvalue,
+		"GET":      commands.GETvalue,
+		"TYPE":     commands.TYPE,
+		"INCR":     commands.INCR,
+		"MULTI":    commands.MULTI,
+		"DISCARD":  commands.DISCARD,
+		"EXEC":     commands.EXEC,
+		"LPUSH":    commands.LPUSH,
+		"RPUSH":    commands.RPUSH,
+		"LPOP":     commands.LPOP,
+		"BLPOP":    commands.BLPOP,
+		"LRANGE":   commands.LRANGE,
+		"LLEN":     commands.LLEN,
+		"XADD":     commands.XADD,
+		"XREAD":    commands.XREAD,
+		"XRANGE":   commands.XRANGE,
+		"REPLCONF": commands.REPLCONF,
+		"PSYNC":    commands.PSYNC,
+		"WAIT":     commands.WAIT,
 	})
 	storage.StartActiveExpiry()
 
 	port := "6379"
-	if len(os.Args) > 2 && os.Args[1] == "--port" {
-		port = os.Args[2]
-	storage.StartMetricsLogger()
+	replicaHost := ""
+	replicaPort := ""
+	for i := 1; i < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--port":
+			if i+1 < len(os.Args) {
+				port = os.Args[i+1]
+				i++
+			}
+		case "--replicaof":
+			if i+2 < len(os.Args) {
+				replicaHost = os.Args[i+1]
+				replicaPort = os.Args[i+2]
+				i += 2
+			}
+		}
 	}
+	if replicaHost != "" && replicaPort != "" {
+		go func() {
+			storage.Replication.Mu.Lock()
+			storage.Replication.Role = "slave"
+			storage.Replication.Mu.Unlock()
+		}()
+		go replication.StartReplica(replicaHost, replicaPort, port)
+	}
+	storage.StartMetricsLogger()
 
 	addr := "0.0.0.0:" + port
 

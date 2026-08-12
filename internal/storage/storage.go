@@ -32,6 +32,60 @@ type Client struct {
 	QueuedCommands [][]string
 }
 
+// Replication-related types and global state
+type ReplicaConnection struct {
+	Conn         net.Conn
+	ListeningPort string
+	AckOffset    int64
+	Connected    bool
+}
+
+type ReplicationState struct {
+	Role           string
+	ReplID         string
+	Offset         int64
+	LastAskedOffset int64
+	Replicas       map[string]*ReplicaConnection
+	Mu             sync.RWMutex
+}
+
+var Replication = &ReplicationState{
+	Role:     "master",
+	ReplID:   "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb",
+	Offset:   0,
+	Replicas: make(map[string]*ReplicaConnection),
+}
+
+func EnsureReplication() *ReplicationState {
+	if Replication == nil {
+		Replication = &ReplicationState{
+			Role:     "master",
+			ReplID:   "",
+			Offset:   0,
+			Replicas: make(map[string]*ReplicaConnection),
+		}
+	}
+	return Replication
+}
+
+func (r *ReplicationState) IncreaseOffset(n int64) {
+	r.Mu.Lock()
+	r.Offset += n
+	r.Mu.Unlock()
+}
+
+func (r *ReplicationState) CountReplicasAcked(targetOffset int64) int {
+	r.Mu.RLock()
+	defer r.Mu.RUnlock()
+	count := 0
+	for _, rep := range r.Replicas {
+		if rep != nil && rep.AckOffset >= targetOffset {
+			count++
+		}
+	}
+	return count
+}
+
 // CommandHandler is the function signature for a Redis command.
 type CommandHandler func(args []string, client *Client) string
 var CommandMap map[string]CommandHandler

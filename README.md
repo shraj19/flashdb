@@ -7,6 +7,7 @@ A lightweight, concurrent, in-memory key-value database built in Go, implementin
 * **Custom Protocol Parser:** Built a raw TCP handler to parse RESP messages from scratch
 * **Concurrency Safe:** Handles concurrent read/writes using `sync.RWMutex` locks for optimal performance
 * **TTL Support:** Implemented active key expiration logic with time-based eviction
+* **Replication Support:** Added master/replica handshake flow, `REPLCONF`, `PSYNC`, and `WAIT` handling, plus offset tracking
 * **Stream Processing:** Support for Redis-like streams with consumer groups and blocking reads
 * **Transaction Support:** MULTI/EXEC/DISCARD transaction handling with rollback capabilities
 * **Persistent Monitoring:** Real-time metrics tracking for database health and performance
@@ -46,7 +47,38 @@ A lightweight, concurrent, in-memory key-value database built in Go, implementin
 - `PING` - Health check
 - `ECHO message` - Echo message back
 - `INFO [section]` - Server information
+- `REPLCONF ...` - Replica registration and ACK configuration
+- `PSYNC ...` - Initial replication handshake
+- `WAIT numreplicas timeout` - Wait for replicas to acknowledge writes
 - `CONFIG GET parameter` - Get configuration
+
+## Replication
+
+FlashDB supports a Redis-like replication flow for basic leader/follower setups:
+
+- master keeps a replication offset and tracks connected replicas
+- replicas connect with `PING`, `REPLCONF`, and `PSYNC`
+- the master emits a full resync frame and propagates writes to connected replicas
+- `WAIT` can block until enough replicas acknowledge the master offset
+
+### Start a master
+```bash
+go run ./cmd/server --port 6379
+```
+
+### Start a replica
+```bash
+go run ./cmd/server --port 6380 --replicaof 127.0.0.1 6379
+```
+
+### Validate replication flow
+```bash
+redis-cli -p 6379
+> SET hello world
+OK
+> WAIT 1 1000
+(integer) 1
+```
 
 ## How to Run
 
