@@ -154,14 +154,42 @@ func TestSETPropagatesToReplicaOverRESPStream(t *testing.T) {
 		Replicas: make(map[string]*storage.ReplicaConnection),
 	}
 
-	masterConn, replicaConn := net.Pipe()
-	defer masterConn.Close()
-	defer replicaConn.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start listener: %v", err)
+	}
+	defer listener.Close()
 
-	resultCh := make(chan []string, 1)
+	acceptCh := make(chan net.Conn, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		incoming, err := resp.ParseRESP(bufio.NewReader(replicaConn))
+		conn, err := listener.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		acceptCh <- conn
+	}()
+
+	clientConn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial test replica: %v", err)
+	}
+	defer clientConn.Close()
+
+	var masterConn net.Conn
+	select {
+	case masterConn = <-acceptCh:
+	case err = <-errCh:
+		t.Fatalf("accept failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for replica connection")
+	}
+	defer masterConn.Close()
+
+	resultCh := make(chan []string, 1)
+	go func() {
+		incoming, err := resp.ParseRESP(bufio.NewReader(clientConn))
 		if err != nil {
 			errCh <- err
 			return
@@ -181,10 +209,7 @@ func TestSETPropagatesToReplicaOverRESPStream(t *testing.T) {
 		t.Fatalf("expected SET response +OK, got %q", response)
 	}
 
-	var (
-		incoming []string
-		err      error
-	)
+	var incoming []string
 	select {
 	case incoming = <-resultCh:
 	case err = <-errCh:
