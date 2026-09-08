@@ -1,8 +1,10 @@
+// Package persistence handles saving and loading FlashDB state to disk.
 package persistence
 
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,12 +20,11 @@ func resetStorage() {
 	storage.Mu = sync.RWMutex{}
 }
 
+// TestSaveAndLoadStrings verifies basic round-trip: save keys, clear, load, check values restored.
 func TestSaveAndLoadStrings(t *testing.T) {
 	testCases := []struct {
-		name     string
-		keys     map[string]string
-		checkSet []string // keys that should exist after load
-		checkNot []string // keys that should NOT exist after load
+		name string
+		keys map[string]string
 	}{
 		{
 			name: "basic key-value pairs",
@@ -32,8 +33,6 @@ func TestSaveAndLoadStrings(t *testing.T) {
 				"project": "flashdb",
 				"counter": "42",
 			},
-			checkSet: []string{"name", "project", "counter"},
-			checkNot: []string{"random_key", "never_set", "foo"},
 		},
 		{
 			name: "empty values",
@@ -41,8 +40,6 @@ func TestSaveAndLoadStrings(t *testing.T) {
 				"empty": "",
 				"space": " ",
 			},
-			checkSet: []string{"empty", "space"},
-			checkNot: []string{"nonempty"},
 		},
 		{
 			name: "special characters in values",
@@ -51,25 +48,21 @@ func TestSaveAndLoadStrings(t *testing.T) {
 				"tab":     "col1\tcol2",
 				"binary":  "\x00\x01\x02",
 			},
-			checkSet: []string{"newline", "tab", "binary"},
-			checkNot: []string{"normal"},
 		},
 		{
 			name: "unicode keys and values",
 			keys: map[string]string{
-				"hindi":  "नमस्ते",
-				"emoji":  "🚀💾",
+				"hindi":   "नमस्ते",
+				"emoji":   "🚀💾",
 				"chinese": "你好",
 			},
-			checkSet: []string{"hindi", "emoji", "chinese"},
-			checkNot: []string{"english"},
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			resetStorage()
-			testFile := fmt.Sprintf("test_%s.rdb", tc.name)
+			testFile := fmt.Sprintf("test_%s.rdb", strings.ReplaceAll(tc.name, " ", "_"))
 			defer os.Remove(testFile)
 
 			// Set keys
@@ -90,99 +83,73 @@ func TestSaveAndLoadStrings(t *testing.T) {
 				t.Fatalf("Load failed: %v", err)
 			}
 
-			// Verify keys that should exist
-			for _, k := range tc.checkSet {
-				expected := tc.keys[k]
+			// Verify all keys restored correctly
+			for k, expected := range tc.keys {
 				if got := storage.Store[k]; got != expected {
 					t.Errorf("key %q: expected %q, got %q", k, expected, got)
 				}
 			}
 
-			// Verify keys that should NOT exist
-			for _, k := range tc.checkNot {
-				if _, exists := storage.Store[k]; exists {
-					t.Errorf("key %q should not exist", k)
-				}
+			// Verify no extra keys loaded
+			if len(storage.Store) != len(tc.keys) {
+				t.Errorf("expected %d keys, got %d", len(tc.keys), len(storage.Store))
 			}
 		})
 	}
 }
 
+// TestSaveAndLoadWithTTL verifies TTL metadata is preserved for future expiry and absent for permanent keys.
 func TestSaveAndLoadWithTTL(t *testing.T) {
-	testCases := []struct {
-		name        string
-		key         string
-		value       string
-		ttlOffset   time.Duration // positive = future, negative = past
-		shouldExist bool
-		shouldHaveTTL bool
-	}{
-		{
-			name:        "future TTL preserved",
-			key:         "temp",
-			value:       "expires_later",
-			ttlOffset:   1 * time.Hour,
-			shouldExist: true,
-			shouldHaveTTL: true,
-		},
-		{
-			name:        "expired TTL not loaded",
-			key:         "old",
-			value:       "should_not_load",
-			ttlOffset:   -1 * time.Hour,
-			shouldExist: false,
-			shouldHaveTTL: false,
-		},
-		{
-			name:        "no TTL stays without TTL",
-			key:         "permanent",
-			value:       "forever",
-			ttlOffset:   0, // 0 means no TTL
-			shouldExist: true,
-			shouldHaveTTL: false,
-		},
+	resetStorage()
+	testFile := "test_ttl.rdb"
+	defer os.Remove(testFile)
+
+	// Setup: three keys with different TTL behaviors
+	storage.Store["future"] = "expires_later"
+	storage.Expiry["future"] = time.Now().Add(1 * time.Hour)
+
+	storage.Store["expired"] = "should_not_load"
+	storage.Expiry["expired"] = time.Now().Add(-1 * time.Hour)
+
+	storage.Store["permanent"] = "forever"
+
+	// Save and reload
+	if err := Save(testFile); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+	resetStorage()
+	if err := Load(testFile); err != nil {
+		t.Fatalf("Load failed: %v", err)
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			resetStorage()
-			testFile := fmt.Sprintf("test_ttl_%s.rdb", tc.name)
-			defer os.Remove(testFile)
+	// Check: future TTL preserved
+	if storage.Store["future"] != "expires_later" {
+		t.Error("future TTL: key should exist")
+	}
+	if _, hasTTL := storage.Expiry["future"]; !hasTTL {
+		t.Error("future TTL: should have TTL")
+	}
 
-			// Set key
-			storage.Store[tc.key] = tc.value
-			if tc.ttlOffset != 0 {
-				storage.Expiry[tc.key] = time.Now().Add(tc.ttlOffset)
-			}
+	// Check: expired TTL not loaded
+	if _, exists := storage.Store["expired"]; exists {
+		t.Error("expired TTL: should not be loaded")
+	}
 
-			// Save
-			err := Save(testFile)
-			if err != nil {
-				t.Fatalf("Save failed: %v", err)
-			}
+	// Check: no TTL keys exists and still have no TTL
+	if storage.Store["permanent"] != "forever" {
+		t.Error("no TTL: key should exist")
+	}
+	if _, hasTTL := storage.Expiry["permanent"]; hasTTL {
+		t.Error("no TTL: should not have TTL")
+	}
 
-			// Clear and reload
-			resetStorage()
-			err = Load(testFile)
-			if err != nil {
-				t.Fatalf("Load failed: %v", err)
-			}
-
-			// Check existence
-			_, exists := storage.Store[tc.key]
-			if exists != tc.shouldExist {
-				t.Errorf("key existence: expected %v, got %v", tc.shouldExist, exists)
-			}
-
-			// Check TTL
-			_, hasTTL := storage.Expiry[tc.key]
-			if hasTTL != tc.shouldHaveTTL {
-				t.Errorf("TTL existence: expected %v, got %v", tc.shouldHaveTTL, hasTTL)
-			}
-		})
+	// Verify total count (only 2 keys: future + permanent)
+	if len(storage.Store) != 2 {
+		t.Errorf("expected 2 keys, got %d", len(storage.Store))
 	}
 }
 
+// TestLoadNonExistentFile verifies Load returns error when file doesn't exist.
 func TestLoadNonExistentFile(t *testing.T) {
 	resetStorage()
 
@@ -196,6 +163,7 @@ func TestLoadNonExistentFile(t *testing.T) {
 	}
 }
 
+// TestSaveEmptyDatabase verifies saving and loading an empty database works without error.
 func TestSaveEmptyDatabase(t *testing.T) {
 	resetStorage()
 	testFile := "test_empty.rdb"
@@ -216,6 +184,7 @@ func TestSaveEmptyDatabase(t *testing.T) {
 	}
 }
 
+// TestSaveAtomicWrite verifies Save uses temp file and cleans up after atomic rename.
 func TestSaveAtomicWrite(t *testing.T) {
 	resetStorage()
 	testFile := "test_atomic.rdb"
@@ -239,6 +208,7 @@ func TestSaveAtomicWrite(t *testing.T) {
 	}
 }
 
+// TestKeyCountBulk verifies Save/Load handles varying key counts correctly.
 func TestKeyCountBulk(t *testing.T) {
 	counts := []int{1, 10, 100, 1000}
 
@@ -272,6 +242,7 @@ func TestKeyCountBulk(t *testing.T) {
 	}
 }
 
+// TestFileFormatValidation verifies Load rejects corrupted or invalid files.
 func TestFileFormatValidation(t *testing.T) {
 	resetStorage()
 
@@ -299,7 +270,7 @@ func TestFileFormatValidation(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			testFile := fmt.Sprintf("test_invalid_%s.rdb", tc.name)
+			testFile := fmt.Sprintf("test_invalid_%s.rdb", strings.ReplaceAll(tc.name, " ", "_"))
 			defer os.Remove(testFile)
 
 			err := os.WriteFile(testFile, tc.content, 0644)
@@ -320,6 +291,7 @@ func TestFileFormatValidation(t *testing.T) {
 	}
 }
 
+// TestLargeValues verifies Save/Load handles large values (1MB) without corruption.
 func TestLargeValues(t *testing.T) {
 	resetStorage()
 	testFile := "test_large.rdb"
